@@ -1,7 +1,6 @@
 #ifndef __ATTR_H__
 #define __ATTR_H__
 
-#define FUSE_USE_VERSION 30
 #define _GNU_SOURCE
 
 #include <stdarg.h>
@@ -9,7 +8,7 @@
 #include <stdio.h>
 
 #include <ebpf.h>
-#include <bpf/attr.h>
+#include "ebpf_attr.h"
 
 #define ST_ATIM_NSEC(stbuf) ((stbuf)->st_atim.tv_nsec)
 #define ST_CTIM_NSEC(stbuf) ((stbuf)->st_ctim.tv_nsec)

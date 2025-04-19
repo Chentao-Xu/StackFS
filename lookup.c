@@ -1,4 +1,3 @@
-#define FUSE_USE_VERSION 30
 #define _XOPEN_SOURCE 500
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -86,12 +85,12 @@ int64_t lookup_fetch(ebpf_context_t *ctxt, uint64_t parent_ino,
 
 	// key
 	key.nodeid = parent_ino;
-	strncpy(key.name, name, NAME_MAX);
+	strncpy(key.name, name, NAME_MAX-1);
 
 	INFO("[%d] \t Looking up node name %s (%ju) parent 0x%lx\n",
 		gettid(), name, strlen(name), parent_ino);
 
-	ret = ebpf_data_lookup(ctxt, (void *)&key, (void *)&val, 0);
+	ret = ebpf_data_lookup(ctxt, (void *)&key, sizeof(lookup_entry_key_t), (void *)&val, sizeof(lookup_entry_val_t), 0);
 	if (ret) {
 		if (errno != ENOENT)
 			ERROR("[%d] \t LOOKUP_FETCH node name %s(%ju) parent 0x%lx failed: %s\n",
@@ -121,7 +120,7 @@ int lookup_insert(ebpf_context_t *ctxt, uint64_t parent_ino,
 
 	// key
 	key.nodeid = parent_ino;
-	strncpy(key.name, name, NAME_MAX);
+	strncpy(key.name, name, NAME_MAX-1);
 
 	// entry value
 	entry.nlookup = nlookup;
@@ -132,7 +131,7 @@ int lookup_insert(ebpf_context_t *ctxt, uint64_t parent_ino,
 
 	// update entry
 	int overwrite = 1; //XXX overwiting to update any negative entires
-	ret = ebpf_data_update(ctxt, (void *)&key, (void *)&entry, 0, overwrite);
+	ret = ebpf_data_update(ctxt, (void *)&key, sizeof(lookup_entry_key_t), (void *)&entry, sizeof(lookup_entry_val_t), 0, overwrite);
 	if (ret)
 		ERROR("[%d] \t Failed to insert %s (%ju) parent 0x%lx count %ju: %s\n",
 			gettid(), name, strlen(name), parent_ino, num_entries, strerror(errno));
@@ -146,11 +145,12 @@ void lookup_gc_stale(ebpf_context_t *ctxt)
 	lookup_entry_key_t key = {0, {0}};
 	lookup_entry_val_t val = {0, 0, 0, 0, 0};
 	lookup_entry_key_t next_key = {0, {0}};
+	const size_t ks = sizeof(lookup_entry_key_t), vs = sizeof(lookup_entry_val_t);
 
-    while (ebpf_data_next(ctxt, (void *)&key, (void *)&next_key, 0) == 0) {
-        ebpf_data_lookup(ctxt, (void *)&next_key, (void *)&val, 0);
+    while (ebpf_data_next(ctxt, (void *)&key, ks, (void *)&next_key, 0) == 0) {
+        ebpf_data_lookup(ctxt, (void *)&next_key, ks, (void *)&val, vs, 0);
         if (val.stale)
-        	ebpf_data_delete(ctxt, (void *)&next_key, 0);
+        	ebpf_data_delete(ctxt, (void *)&next_key, ks, 0);
         key = next_key;
     }
 }
@@ -166,13 +166,13 @@ int lookup_delete(ebpf_context_t *ctxt, uint64_t parent_ino,
 	// key
 	lookup_entry_key_t key = {0, {0}};
 	key.nodeid = parent_ino;
-	strncpy(key.name, name, NAME_MAX);
+	strncpy(key.name, name, NAME_MAX-1);
 
 	INFO("[%d] \t Deleting node name %s (%ju) parent 0x%lx\n",
 		gettid(), name, strlen(name), parent_ino);
 
 	// delete from lookup table
-	ret = ebpf_data_delete(ctxt, (void *)&key, 0);
+	ret = ebpf_data_delete(ctxt, (void *)&key, sizeof(lookup_entry_key_t), 0);
 	if (ret && errno != ENOENT)
 		ERROR("[%d] \t Failed to delete %s(%ju) parent 0x%lx count %ju: %s!\n",
 			gettid(), name, strlen(name), parent_ino,
@@ -193,7 +193,7 @@ int lookup_rename(ebpf_context_t *ctxt, uint64_t old_pino,
 
 	// key
 	key.nodeid = old_pino;
-	strncpy(key.name, oldname, NAME_MAX);
+	strncpy(key.name, oldname, NAME_MAX-1);
 
 	INFO("[%d] \t Looking up node oldname %s (%ju) old parent 0x%lx\n",
 		gettid(), oldname, strlen(oldname), old_pino);
@@ -231,7 +231,7 @@ int lookup_rename(ebpf_context_t *ctxt, uint64_t old_pino,
 
 	// new key
 	key.nodeid = new_pino;
-	strncpy(key.name, newname, NAME_MAX);
+	strncpy(key.name, newname, NAME_MAX-1);
 
 	// fix node val
 	val.nlookup = nlookup;

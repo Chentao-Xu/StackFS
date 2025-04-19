@@ -1,4 +1,3 @@
-#define FUSE_USE_VERSION 30
 #define _XOPEN_SOURCE 500
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -38,6 +37,8 @@
 #ifdef ENABLE_EXTFUSE_ATTR
 #include "attr.h"
 #endif
+
+#include "create.h"
 
 #include "StackFS_LL.h"
 
@@ -448,6 +449,123 @@ int create_entry(fuse_req_t req, struct lo_inode* pinode,
 	}
 }
 
+typedef struct create_args {
+    uint8_t inode_is_null;
+    int namelen;
+    double attr_timeout;
+    double entry_timeout;
+    struct lo_inode inode;
+    struct lo_inode pinode;
+    struct fuse_entry_param e;
+    char name[256];
+    // char inode_name[256];
+} create_args_t;
+
+// optimized version of create_entry for create by eBPF
+int create_entry_for_create_ebpf(fuse_req_t req, struct lo_inode* pinode,
+                  const char *name, const char *cpath,
+                  struct fuse_entry_param *e, const char *op, int time)
+{
+	/* insert lo_inode into the hash table */
+	struct lo_inode *inode;
+	struct lo_data *lo_data = get_lo_data(req);
+	int64_t res;
+
+	// ERROR("CALL create_entry_for_create_ebpf\n");
+	pthread_mutex_lock(&lo_data->mutex);
+	inode = lookup_child_by_name_locked(pinode, name);
+	int namelen = strlen(name);
+	create_args_t ebpf_args = {
+		.inode_is_null = inode == NULL,
+		.namelen = namelen,
+		.attr_timeout = lo_attr_valid_time(req),
+		.entry_timeout = lo_entry_valid_time(req),
+	};
+	// ebpf_args.inode.name = ebpf_args.inode_name;
+	memcpy(&ebpf_args.pinode, pinode, sizeof(struct lo_inode));
+	memcpy(&ebpf_args.e, e, sizeof(struct fuse_entry_param));
+	res = ebpf_create_entry(lo_data->ebpf_ctxt, &ebpf_args, sizeof(ebpf_args));
+
+	pthread_mutex_unlock(&lo_data->mutex);
+	// ERROR("ENDCALL create_entry_for_create_ebpf\n");
+
+	if(!res) {
+		// ERROR("ebpf_create_entry ok!\n");
+		memcpy(e, &ebpf_args.e, sizeof(struct fuse_entry_param));
+		memcpy(inode, &ebpf_args.inode, sizeof(struct lo_inode)); //
+		return 0;
+	}
+	// ERROR("ebpf_create_entry failed, fallback to create_entry\n");
+
+	/* Assign the stats of the newly created directory */
+	memset(e, 0, sizeof(*e));
+
+	/* Assign the stats of the newly created directory */
+	res = lstat(cpath, &e->attr);
+	if (time) {
+		generate_end_time(req);
+		populate_time(req);
+	}
+
+	if (res) {
+		ERROR("[%d] \t %s(%s) lstat(%s) failed: %s\n",
+			gettid(), op, name, cpath, strerror(errno));
+		fuse_reply_err(req, errno);
+		return -1;
+	} else {
+		pthread_mutex_lock(&lo_data->mutex);
+		// inode = lookup_child_by_name_locked(pinode, name);
+    	if (inode)
+			acquire_node_locked(inode);
+    	else
+			inode = create_node_locked(pinode, name);
+		if (!inode) {
+			ERROR("[%d] \t %s(%s) node creation failed: %s\n",
+					gettid(), op, name, strerror(errno));
+			pthread_mutex_unlock(&lo_data->mutex);
+			if (time)
+				fuse_reply_err(req, ENOMEM);
+			return -1;
+		}
+
+		INFO("[%d] \t %s new node %s id: %p\n",
+				gettid(), op, cpath, inode);
+
+		/* optimization entries have nlookup=0 */
+		if (!time)
+			inode->nlookup = 0;
+
+		inode->ino = e->attr.st_ino;
+		inode->dev = e->attr.st_dev;
+
+		e->attr_timeout = lo_attr_valid_time(req);
+		e->entry_timeout = lo_entry_valid_time(req);
+
+		/* store this for mapping (debugging) */
+		e->ino = inode->lo_ino;
+
+#ifdef ENABLE_EXTFUSE_LOOKUP
+		res = lookup_fetch(get_lo_data(req)->ebpf_ctxt, inode->pino,
+				inode->name);
+		if (res && !errno) {
+			INFO("[%d] \t Fetched %s nlookup: %ld inode->nlookup: %ld\n",
+				gettid(), res < 0 ? "stale" : "", res, inode->nlookup);
+			if (res < 0)
+				res = -res;
+			inode->nlookup = res + 1;
+		}
+		res = lookup_insert(get_lo_data(req)->ebpf_ctxt, inode->pino,
+				inode->name, inode->nlookup, e);
+		if (res)
+			ERROR("[%d] \t %s new node %s id: %p: %s\n",
+				gettid(), op, cpath, inode, strerror(errno));
+#endif
+		pthread_mutex_unlock(&lo_data->mutex);
+		return 0;
+	}
+}
+
+
 void stackfs_ll_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
 		      const char *newname)
 {
@@ -847,7 +965,7 @@ static void stackfs_ll_create(fuse_req_t req, fuse_ino_t pino,
 		return;
 	}
 
-	res = create_entry(req, pinode, name, cpath, &e, "create", 1);
+	res = create_entry_for_create_ebpf(req, pinode, name, cpath, &e, "create", 1);
 	if (res) {
 		close(fd);
 	} else {
@@ -1531,7 +1649,7 @@ static void forget_inode(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup)
 
 #ifdef ENABLE_EXTFUSE
 	// fast path inodes
-	if ((int64_t)ino < 0) {
+	if ((int64_t)ino < 0 || ino > 0) {
 		INFO("[%d] \t FORGET: negative inode %"PRIu64"\n",
 			gettid(), (uint64_t) ino);
 		return;
@@ -1564,11 +1682,13 @@ static void forget_inode(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup)
 			gettid(), res < 0 ? "stale" : "", res, inode->nlookup);
 		if (res < 0)
 			res = -res;
-	} else if (errno == ENOENT)
-		res = 0; // do not care if nothing exists
-	else {
-		ERROR("[%d] \t Failed to fetch node %s parent 0x%lx from hashtab\n",
+	} else if (errno == ENOENT) {
+		ERROR("[%d] \t Nothing found for node %s parent 0x%lx\n",
 			gettid(), inode->name, inode->pino);
+		res = 0; // do not care if nothing exists
+	} else {
+		ERROR("[%d] \t Failed to fetch node %s parent 0x%lx from hashtab @@@ %s\n",
+			gettid(), inode->name, inode->pino, strerror(errno));
 		pthread_mutex_unlock(&lo_data->mutex);
 		return;
 	}
@@ -2101,14 +2221,15 @@ static void stackfs_ll_init(void *userdata,
 	if (conn->capable & FUSE_CAP_EXTFUSE) {
 		/* FIXME hard-coded bpf file path */
 		INFO("ALERT: Attempting to load ExtFUSE eBPF bytecode from /tmp/extfuse.o\n");
-		lo->ebpf_ctxt = ebpf_init("/tmp/extfuse.o");
+		lo->ebpf_ctxt = ebpf_init("/tmp/extfuse.bpf.o");
 		if (!lo->ebpf_ctxt) {
 			ERROR("\tENABLE_EXTFUSE failed %s\n",
 				strerror(errno));
 		} else {
-			ERROR("\tExtFUSE eBPF bytecode loaded: ctxt=0x%lx fd=%d\n",
-				(unsigned long)lo->ebpf_ctxt, lo->ebpf_ctxt->ctrl_fd);
+			ERROR("\tExtFUSE eBPF bytecode loaded: ctxt=0x%lx skel=0x%lx\n",
+				(unsigned long)lo->ebpf_ctxt, (unsigned long)lo->ebpf_ctxt->skel);
 			conn->want |= FUSE_CAP_EXTFUSE;
+			ERROR("ExtFUSE prog fd: %d\n", lo->ebpf_ctxt->ctrl_fd);
 			conn->extfuse_prog_fd = lo->ebpf_ctxt->ctrl_fd;
 		}
 	} else {
@@ -2116,6 +2237,27 @@ static void stackfs_ll_init(void *userdata,
 				(unsigned long)conn->capable, (unsigned long)FUSE_CAP_EXTFUSE,
 				(unsigned long)(conn->capable & FUSE_CAP_EXTFUSE));
 	}
+
+	// WRITEBACK_CACHE
+	if(conn->capable & FUSE_CAP_WRITEBACK_CACHE) {
+		ERROR("\tWRITEBACK_CACHE enabled\n");
+	} else {
+		ERROR("\tWRITEBACK_CACHE not supported\n");
+	}
+	// SPLICE_WRITE
+	if(conn->capable & FUSE_CAP_SPLICE_WRITE) {
+		ERROR("\tSPLICE_WRITE enabled\n");
+	} else {
+		ERROR("\tSPLICE_WRITE not supported\n");
+	}
+	// SPLICE_MOVE
+	if(conn->capable & FUSE_CAP_SPLICE_MOVE) {
+		ERROR("\tSPLICE_MOVE enabled\n");
+	} else {
+		ERROR("\tSPLICE_MOVE not supported\n");
+	}
+
+	ERROR("\tMAX_WRITE=%u\n", conn->max_write);
 }
 #endif
 
@@ -2447,67 +2589,94 @@ int main(int argc, char **argv)
 		goto out2;
 	}
 
-	struct fuse_chan *ch;
 	char *mountpoint;
 
 	/* allow other users/apps to access the storage space */
     fuse_opt_add_arg(&args, "-oallow_other");
 
-	res = fuse_parse_cmdline(&args, &mountpoint, &multithreaded, NULL);
+	struct fuse_cmdline_opts opts;
+	// res = fuse_parse_cmdline(&args, &mountpoint, &multithreaded, NULL);
+	// fuse_cmdline_help();
+	res = fuse_parse_cmdline(&args, &opts);
+	if(res != 0) {
+		goto out3;
+	}
+	mountpoint = opts.mountpoint;
+	multithreaded = !opts.singlethread;
 
 	/* Initialise the spinlock before the logfile creation */
 	pthread_mutex_init(&mutex, 0);
 
-	ERROR("Multi Threaded : %d\n", multithreaded);
+	struct fuse_session *se;
 
-	if (res != -1) {
-		ch = fuse_mount(mountpoint, &args);
-		if (ch) {
-			struct fuse_session *se;
-
-			INFO("Mounted Successfully\n");
-			se = fuse_lowlevel_new(&args, &hello_ll_oper,
-						sizeof(hello_ll_oper), lo);
-			if (se) {
-				if (fuse_set_signal_handlers(se) != -1) {
-#ifdef ENABLE_STATS
-					stats_fd = open(USER_STATS_FILE, O_WRONLY | O_CREAT);
-					if (stats_fd < 0)
-						ERROR("Failed to create stats file\n");
-					else {
-						ERROR("Created stats file: %s\n", USER_STATS_FILE);
-						set_signhandlers();
-					}
-#endif
-					fuse_session_add_chan(se, ch);
-					if (resolved_statsDir)
-						fuse_session_add_statsDir(se,
-							resolved_statsDir);
-
-					if (multithreaded)
-						err = fuse_session_loop_mt(se);
-					else
-						err = fuse_session_loop(se);
-					(void) err;
-
-					fuse_remove_signal_handlers(se);
-					fuse_session_remove_statsDir(se);
-					fuse_session_remove_chan(ch);
-					INFO("fuse_remove_signal_handlers\n");
-#ifdef ENABLE_STATS
-					if (stats_fd > 0) {
-						print_stats();
-						close(stats_fd);
-					}
-#endif
-				}
-				fuse_session_destroy(se);
-				INFO("fuse_session_destroy\n");
-			}
-			INFO("Function Trace : Unmount");
-			fuse_unmount(mountpoint, ch);
-		}
+	se = fuse_session_new(&args, &hello_ll_oper,
+				sizeof(hello_ll_oper), lo);
+	if(se == NULL) {
+		ERROR("Failed to create fuse session\n");
+		goto out3;
 	}
+	if (fuse_set_signal_handlers(se) != 0) {
+		ERROR("Failed to set signal handlers\n");
+		goto out3; // TODO: remove signal handlers
+	}
+#ifdef ENABLE_STATS
+	stats_fd = open(USER_STATS_FILE, O_WRONLY | O_CREAT);
+	if (stats_fd < 0)
+		ERROR("Failed to create stats file\n");
+	else {
+		ERROR("Created stats file: %s\n", USER_STATS_FILE);
+		set_signhandlers();
+	}
+#endif
+	if (fuse_session_mount(se, mountpoint) != 0) {
+		ERROR("Failed to mount fuse session\n");
+		goto out3; // TODO: remove signal handlers
+	}
+	INFO("Mounted Successfully\n");
+	
+	if (resolved_statsDir)
+		fuse_session_add_statsDir(se,
+			resolved_statsDir);
+	
+	fuse_daemonize(opts.foreground);
+
+	if (multithreaded) {
+		// struct fuse_loop_config config;
+		// config.clone_fd = opts.clone_fd;
+		// config.max_idle_threads = opts.max_idle_threads;
+		ERROR("Multi Threaded\n");
+		ERROR("Max Threads: %d\n", opts.max_threads);
+		ERROR("Clone FD: %d\n", opts.clone_fd);
+
+		struct fuse_loop_config *config = fuse_loop_cfg_create();
+		if(config == NULL) {
+			ERROR("Failed to create fuse loop config\n");
+			goto out3;
+		}
+		fuse_loop_cfg_set_clone_fd(config, opts.clone_fd);
+		// fuse_loop_cfg_set_idle_threads(config, opts.max_idle_threads);
+		fuse_loop_cfg_set_max_threads(config, opts.max_threads);
+		err = fuse_session_loop_mt(se, config);
+		fuse_loop_cfg_destroy(config);
+	} else {
+		ERROR("Single Threaded\n");
+		err = fuse_session_loop(se);
+	}
+	(void) err;
+
+	fuse_session_remove_statsDir(se);
+	INFO("Function Trace : Unmount");
+	fuse_session_unmount(se);
+#ifdef ENABLE_STATS
+	if (stats_fd > 0) {
+		print_stats();
+		close(stats_fd);
+	}
+#endif
+	INFO("fuse_remove_signal_handlers\n");
+	fuse_remove_signal_handlers(se);
+	INFO("fuse_session_destroy\n");
+	fuse_session_destroy(se);
 
 	/* free the arguments */
 	fuse_opt_free_args(&args);

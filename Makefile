@@ -4,7 +4,9 @@ ifndef EXTFUSE_REPO_PATH
 	$(error EXTFUSE_REPO_PATH is not set)
 endif
 
-CFLAGS += -D_FILE_OFFSET_BITS=64 -Wall -Werror #-DENABLE_STATS -DDEBUG
+CFLAGS += -D_FILE_OFFSET_BITS=64 -Wall -Werror #-DENABLE_STATS 
+# CFLAGS += -DDEBUG -g
+CFLAGS += -Ofast
 
 STACKFS_LL_SRCS = StackFS_LL.c
 
@@ -15,7 +17,7 @@ STACKFS_LL_CFLAGS = \
 
 STACKFS_LL_LDFLAGS = \
 	$(shell pkg-config --libs fuse3) \
-	-L$(EXTFUSE_REPO_PATH) -lextfuse
+	-L$(EXTFUSE_REPO_PATH)/.output -lextfuse -lbpf
 
 # Use '-DUSE_SPLICE=0' for default fuse (no optimizations)
 # Use '-DUSE_SPLICE=1' for optimized fuse
@@ -25,9 +27,10 @@ STACKFS_LL_LDFLAGS = \
 # Use '-DENABLE_EXTFUSE_ATTR' to cache attr replies in the kernel with ExtFUSE
 
 # ExtFUSE enabled, LOOKUP and ATTR requests are cached in the kernel
-StackFS_ll: $(STACKFS_LL_SRCS) attr.c lookup.c
+StackFS_ll: $(STACKFS_LL_SRCS) attr.c lookup.c create.c
 	gcc $(CFLAGS) \
 		-DUSE_SPLICE=1 \
+		-DFUSE_USE_VERSION=312 \
 		-DENABLE_EXTFUSE_LOOKUP \
 		-DENABLE_EXTFUSE_ATTR \
 		-DENABLE_EXTFUSE \

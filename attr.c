@@ -1,4 +1,3 @@
-#define FUSE_USE_VERSION 30
 #define _XOPEN_SOURCE 500
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -97,7 +96,7 @@ int attr_fetch(ebpf_context_t *ctxt, uint64_t nodeid,
 
 	INFO("[%d] \t Looking up attr for node 0x%lx\n", gettid(), nodeid);
 
-	ret = ebpf_data_lookup(ctxt, (void *)&nodeid, (void *)&val, 1);
+	ret = ebpf_data_lookup(ctxt, (void *)&nodeid, sizeof(lookup_attr_key_t), (void *)&val, sizeof(lookup_attr_val_t), 1);
 	if (ret) {
 		if (errno != ENOENT)
 			ERROR("[%d] \t ATTR_FETCH node 0x%lx failed: %s\n",
@@ -127,7 +126,7 @@ int attr_insert(ebpf_context_t *ctxt, uint64_t nodeid,
 	// update lookup table
 	int overwrite = 1; //XXX overwiting to update any negative entires
 
-	ret = ebpf_data_update(ctxt, (void *)&nodeid, (void *)&val, 1, overwrite);
+	ret = ebpf_data_update(ctxt, (void *)&nodeid, sizeof(lookup_attr_key_t), (void *)&val, sizeof(lookup_attr_val_t), 1, overwrite);
 	if (ret)
 		ERROR("[%d] \t Failed to insert attr for node 0x%lx count %ju: %s\n",
 			gettid(), nodeid, num_entries, strerror(errno));
@@ -143,7 +142,7 @@ int attr_delete(ebpf_context_t *ctxt, uint64_t nodeid)
 	INFO("[%d] \t Deleting attr for node 0x%lx\n", gettid(), nodeid);
 
 	// delete from lookup table
-	ret = ebpf_data_delete(ctxt, (void *)&nodeid, 1);
+	ret = ebpf_data_delete(ctxt, (void *)&nodeid, sizeof(lookup_attr_key_t), 1);
 	if (ret && errno != ENOENT)
 		ERROR("[%d] \t Failed to delete attr for node 0x%lx count %ju: %s!\n",
 			gettid(), nodeid, num_entries, strerror(errno));

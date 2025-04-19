@@ -1,7 +1,6 @@
 #ifndef __LOOKUP_H__
 #define __LOOKUP_H__
 
-#define FUSE_USE_VERSION 30
 #define _GNU_SOURCE
 
 #include <stdarg.h>
@@ -12,8 +11,8 @@
 #include <linux/fuse.h>
 #include <fuse_lowlevel.h>
 
-#include <ebpf.h>
-#include <bpf/lookup.h>
+#include "ebpf.h"
+#include "ebpf_lookup.h"
 
 void *lookup_init(struct fuse_conn_info *conn);
 int lookup_insert(ebpf_context_t *ctxt, uint64_t pino, const char *name,
