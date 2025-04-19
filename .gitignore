@@ -1,3 +1,4 @@
 .cache/
 StackFS_ll
 tmp/
+compile_commands.json
