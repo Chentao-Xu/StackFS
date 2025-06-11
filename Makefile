@@ -27,7 +27,7 @@ STACKFS_LL_LDFLAGS = \
 # Use '-DENABLE_EXTFUSE_ATTR' to cache attr replies in the kernel with ExtFUSE
 
 # ExtFUSE enabled, LOOKUP and ATTR requests are cached in the kernel
-StackFS_ll: $(STACKFS_LL_SRCS) attr.c lookup.c create.c
+StackFS_ll: $(STACKFS_LL_SRCS) attr.c lookup.c create.c read.c
 	gcc $(CFLAGS) \
 		-DUSE_SPLICE=1 \
 		-DFUSE_USE_VERSION=312 \

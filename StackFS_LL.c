@@ -39,6 +39,7 @@
 #endif
 
 #include "create.h"
+#include "read.h"
 
 #include "StackFS_LL.h"
 
@@ -449,121 +450,121 @@ int create_entry(fuse_req_t req, struct lo_inode* pinode,
 	}
 }
 
-typedef struct create_args {
-    uint8_t inode_is_null;
-    int namelen;
-    double attr_timeout;
-    double entry_timeout;
-    struct lo_inode inode;
-    struct lo_inode pinode;
-    struct fuse_entry_param e;
-    char name[256];
-    // char inode_name[256];
-} create_args_t;
+// typedef struct create_args {
+//     uint8_t inode_is_null;
+//     int namelen;
+//     double attr_timeout;
+//     double entry_timeout;
+//     struct lo_inode inode;
+//     struct lo_inode pinode;
+//     struct fuse_entry_param e;
+//     char name[256];
+//     // char inode_name[256];
+// } create_args_t;
 
-// optimized version of create_entry for create by eBPF
-int create_entry_for_create_ebpf(fuse_req_t req, struct lo_inode* pinode,
-                  const char *name, const char *cpath,
-                  struct fuse_entry_param *e, const char *op, int time)
-{
-	/* insert lo_inode into the hash table */
-	struct lo_inode *inode;
-	struct lo_data *lo_data = get_lo_data(req);
-	int64_t res;
+// // optimized version of create_entry for create by eBPF
+// int create_entry_for_create_ebpf(fuse_req_t req, struct lo_inode* pinode,
+//                   const char *name, const char *cpath,
+//                   struct fuse_entry_param *e, const char *op, int time)
+// {
+// 	/* insert lo_inode into the hash table */
+// 	struct lo_inode *inode;
+// 	struct lo_data *lo_data = get_lo_data(req);
+// 	int64_t res;
 
-	// ERROR("CALL create_entry_for_create_ebpf\n");
-	pthread_mutex_lock(&lo_data->mutex);
-	inode = lookup_child_by_name_locked(pinode, name);
-	int namelen = strlen(name);
-	create_args_t ebpf_args = {
-		.inode_is_null = inode == NULL,
-		.namelen = namelen,
-		.attr_timeout = lo_attr_valid_time(req),
-		.entry_timeout = lo_entry_valid_time(req),
-	};
-	// ebpf_args.inode.name = ebpf_args.inode_name;
-	memcpy(&ebpf_args.pinode, pinode, sizeof(struct lo_inode));
-	memcpy(&ebpf_args.e, e, sizeof(struct fuse_entry_param));
-	res = ebpf_create_entry(lo_data->ebpf_ctxt, &ebpf_args, sizeof(ebpf_args));
+// 	// ERROR("CALL create_entry_for_create_ebpf\n");
+// 	pthread_mutex_lock(&lo_data->mutex);
+// 	inode = lookup_child_by_name_locked(pinode, name);
+// 	int namelen = strlen(name);
+// 	create_args_t ebpf_args = {
+// 		.inode_is_null = inode == NULL,
+// 		.namelen = namelen,
+// 		.attr_timeout = lo_attr_valid_time(req),
+// 		.entry_timeout = lo_entry_valid_time(req),
+// 	};
+// 	// ebpf_args.inode.name = ebpf_args.inode_name;
+// 	memcpy(&ebpf_args.pinode, pinode, sizeof(struct lo_inode));
+// 	memcpy(&ebpf_args.e, e, sizeof(struct fuse_entry_param));
+// 	res = ebpf_create_entry(lo_data->ebpf_ctxt, &ebpf_args, sizeof(ebpf_args));
 
-	pthread_mutex_unlock(&lo_data->mutex);
-	// ERROR("ENDCALL create_entry_for_create_ebpf\n");
+// 	pthread_mutex_unlock(&lo_data->mutex);
+// 	// ERROR("ENDCALL create_entry_for_create_ebpf\n");
 
-	if(!res) {
-		// ERROR("ebpf_create_entry ok!\n");
-		memcpy(e, &ebpf_args.e, sizeof(struct fuse_entry_param));
-		memcpy(inode, &ebpf_args.inode, sizeof(struct lo_inode)); //
-		return 0;
-	}
-	// ERROR("ebpf_create_entry failed, fallback to create_entry\n");
+// 	if(!res) {
+// 		// ERROR("ebpf_create_entry ok!\n");
+// 		memcpy(e, &ebpf_args.e, sizeof(struct fuse_entry_param));
+// 		memcpy(inode, &ebpf_args.inode, sizeof(struct lo_inode)); //
+// 		return 0;
+// 	}
+// 	// ERROR("ebpf_create_entry failed, fallback to create_entry\n");
 
-	/* Assign the stats of the newly created directory */
-	memset(e, 0, sizeof(*e));
+// 	/* Assign the stats of the newly created directory */
+// 	memset(e, 0, sizeof(*e));
 
-	/* Assign the stats of the newly created directory */
-	res = lstat(cpath, &e->attr);
-	if (time) {
-		generate_end_time(req);
-		populate_time(req);
-	}
+// 	/* Assign the stats of the newly created directory */
+// 	res = lstat(cpath, &e->attr);
+// 	if (time) {
+// 		generate_end_time(req);
+// 		populate_time(req);
+// 	}
 
-	if (res) {
-		ERROR("[%d] \t %s(%s) lstat(%s) failed: %s\n",
-			gettid(), op, name, cpath, strerror(errno));
-		fuse_reply_err(req, errno);
-		return -1;
-	} else {
-		pthread_mutex_lock(&lo_data->mutex);
-		// inode = lookup_child_by_name_locked(pinode, name);
-    	if (inode)
-			acquire_node_locked(inode);
-    	else
-			inode = create_node_locked(pinode, name);
-		if (!inode) {
-			ERROR("[%d] \t %s(%s) node creation failed: %s\n",
-					gettid(), op, name, strerror(errno));
-			pthread_mutex_unlock(&lo_data->mutex);
-			if (time)
-				fuse_reply_err(req, ENOMEM);
-			return -1;
-		}
+// 	if (res) {
+// 		ERROR("[%d] \t %s(%s) lstat(%s) failed: %s\n",
+// 			gettid(), op, name, cpath, strerror(errno));
+// 		fuse_reply_err(req, errno);
+// 		return -1;
+// 	} else {
+// 		pthread_mutex_lock(&lo_data->mutex);
+// 		// inode = lookup_child_by_name_locked(pinode, name);
+//     	if (inode)
+// 			acquire_node_locked(inode);
+//     	else
+// 			inode = create_node_locked(pinode, name);
+// 		if (!inode) {
+// 			ERROR("[%d] \t %s(%s) node creation failed: %s\n",
+// 					gettid(), op, name, strerror(errno));
+// 			pthread_mutex_unlock(&lo_data->mutex);
+// 			if (time)
+// 				fuse_reply_err(req, ENOMEM);
+// 			return -1;
+// 		}
 
-		INFO("[%d] \t %s new node %s id: %p\n",
-				gettid(), op, cpath, inode);
+// 		INFO("[%d] \t %s new node %s id: %p\n",
+// 				gettid(), op, cpath, inode);
 
-		/* optimization entries have nlookup=0 */
-		if (!time)
-			inode->nlookup = 0;
+// 		/* optimization entries have nlookup=0 */
+// 		if (!time)
+// 			inode->nlookup = 0;
 
-		inode->ino = e->attr.st_ino;
-		inode->dev = e->attr.st_dev;
+// 		inode->ino = e->attr.st_ino;
+// 		inode->dev = e->attr.st_dev;
 
-		e->attr_timeout = lo_attr_valid_time(req);
-		e->entry_timeout = lo_entry_valid_time(req);
+// 		e->attr_timeout = lo_attr_valid_time(req);
+// 		e->entry_timeout = lo_entry_valid_time(req);
 
-		/* store this for mapping (debugging) */
-		e->ino = inode->lo_ino;
+// 		/* store this for mapping (debugging) */
+// 		e->ino = inode->lo_ino;
 
-#ifdef ENABLE_EXTFUSE_LOOKUP
-		res = lookup_fetch(get_lo_data(req)->ebpf_ctxt, inode->pino,
-				inode->name);
-		if (res && !errno) {
-			INFO("[%d] \t Fetched %s nlookup: %ld inode->nlookup: %ld\n",
-				gettid(), res < 0 ? "stale" : "", res, inode->nlookup);
-			if (res < 0)
-				res = -res;
-			inode->nlookup = res + 1;
-		}
-		res = lookup_insert(get_lo_data(req)->ebpf_ctxt, inode->pino,
-				inode->name, inode->nlookup, e);
-		if (res)
-			ERROR("[%d] \t %s new node %s id: %p: %s\n",
-				gettid(), op, cpath, inode, strerror(errno));
-#endif
-		pthread_mutex_unlock(&lo_data->mutex);
-		return 0;
-	}
-}
+// #ifdef ENABLE_EXTFUSE_LOOKUP
+// 		res = lookup_fetch(get_lo_data(req)->ebpf_ctxt, inode->pino,
+// 				inode->name);
+// 		if (res && !errno) {
+// 			INFO("[%d] \t Fetched %s nlookup: %ld inode->nlookup: %ld\n",
+// 				gettid(), res < 0 ? "stale" : "", res, inode->nlookup);
+// 			if (res < 0)
+// 				res = -res;
+// 			inode->nlookup = res + 1;
+// 		}
+// 		res = lookup_insert(get_lo_data(req)->ebpf_ctxt, inode->pino,
+// 				inode->name, inode->nlookup, e);
+// 		if (res)
+// 			ERROR("[%d] \t %s new node %s id: %p: %s\n",
+// 				gettid(), op, cpath, inode, strerror(errno));
+// #endif
+// 		pthread_mutex_unlock(&lo_data->mutex);
+// 		return 0;
+// 	}
+// }
 
 
 void stackfs_ll_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent,
@@ -965,7 +966,7 @@ static void stackfs_ll_create(fuse_req_t req, fuse_ino_t pino,
 		return;
 	}
 
-	res = create_entry_for_create_ebpf(req, pinode, name, cpath, &e, "create", 1);
+	res = create_entry(req, pinode, name, cpath, &e, "create", 1);
 	if (res) {
 		close(fd);
 	} else {
@@ -1198,7 +1199,7 @@ static void stackfs_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 				off_t offset, struct fuse_file_info *fi)
 {
 	(void) ino;
-
+	printf("stackfs_ll_read: offset=%ld, size=%ld\n", offset, size);
 #ifdef DEBUG
     struct lo_inode* inode;
     char path[PATH_MAX];
@@ -1435,6 +1436,7 @@ static void stackfs_ll_releasedir(fuse_req_t req, fuse_ino_t ino,
 static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 			size_t size, off_t off, struct fuse_file_info *fi)
 {
+	printf("entering stackfs_ll_write\n");
 	int res;
 	(void) ino;
 
@@ -1466,12 +1468,18 @@ static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 		fuse_reply_err(req, errno);
 	} else
 		fuse_reply_write(req, res);
+
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	// struct lo_data *lo_data = get_lo_data(req);
+	// data_insert(lo_data->ebpf_ctxt, fi->fh, off, size, buf);
+#endif
 }
 
 #if USE_SPLICE
 static void stackfs_ll_write_buf(fuse_req_t req, fuse_ino_t ino,
 		struct fuse_bufvec *buf, off_t off, struct fuse_file_info *fi)
 {
+	printf("entering stackfs_ll_write_buf\n");
 	int res;
 	(void) ino;
 
@@ -1505,6 +1513,14 @@ static void stackfs_ll_write_buf(fuse_req_t req, fuse_ino_t ino,
 		fuse_reply_write(req, res);
 	else
 		fuse_reply_err(req, res);
+
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	// struct lo_data *lo_data = get_lo_data(req);
+	// struct fuse_buf *buf_entry = &buf->buf[0];
+	// char *data = (char *)buf_entry->mem;  // 获取写入数据的内容
+	// size_t data_size = buf_entry->size;   // 获取数据的大小
+	// data_insert(lo_data->ebpf_ctxt, fi->fh, off, data_size, data);
+#endif
 }
 #endif
 
@@ -2229,7 +2245,7 @@ static void stackfs_ll_init(void *userdata,
 			ERROR("\tExtFUSE eBPF bytecode loaded: ctxt=0x%lx skel=0x%lx\n",
 				(unsigned long)lo->ebpf_ctxt, (unsigned long)lo->ebpf_ctxt->skel);
 			conn->want |= FUSE_CAP_EXTFUSE;
-			ERROR("ExtFUSE prog fd: %d\n", lo->ebpf_ctxt->ctrl_fd);
+			ERROR("\tExtFUSE prog fd: %d\n", lo->ebpf_ctxt->ctrl_fd);
 			conn->extfuse_prog_fd = lo->ebpf_ctxt->ctrl_fd;
 		}
 	} else {
@@ -2258,6 +2274,8 @@ static void stackfs_ll_init(void *userdata,
 	}
 
 	ERROR("\tMAX_WRITE=%u\n", conn->max_write);
+
+	// buf_map_init(lo->ebpf_ctxt);
 }
 #endif
 
