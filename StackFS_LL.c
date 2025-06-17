@@ -1253,6 +1253,10 @@ static void stackfs_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 #ifdef ENABLE_EXTFUSE_ATTR
 		cache_attr(req, ino, fi);
 #endif
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	struct lo_data *lo_data = get_lo_data(req);
+	data_insert(lo_data->ebpf_ctxt, fi->fh, offset, size, buf);
+#endif
 		if (res == -1) {
 			ERROR("[%d] \t Read @ 0x%"PRIx64" fd: 0x%"PRIx64" off : %lu, size : %zu failed: %s\n",
 					gettid(), (uint64_t)ino, fi->fh, offset, size, strerror(errno));
@@ -1436,7 +1440,7 @@ static void stackfs_ll_releasedir(fuse_req_t req, fuse_ino_t ino,
 static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 			size_t size, off_t off, struct fuse_file_info *fi)
 {
-	printf("entering stackfs_ll_write\n");
+	printf("entering stackfs_ll_write!\n");
 	int res;
 	(void) ino;
 
@@ -1461,6 +1465,11 @@ static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 	generate_end_time(req);
 	populate_time(req);
 
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	struct lo_data *lo_data = get_lo_data(req);
+	data_insert(lo_data->ebpf_ctxt, fi->fh, off, size, buf);
+#endif
+
 	if (res == -1) {
 		ERROR("[%d] \t Write @ 0x%"PRIx64" fd: 0x%"PRIx64" off : %lu, size : %zu "
 				"failed: %s\n", gettid(), (uint64_t)ino, fi->fh, off, size,
@@ -1468,11 +1477,6 @@ static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 		fuse_reply_err(req, errno);
 	} else
 		fuse_reply_write(req, res);
-
-#ifdef ENABLE_EXTFUSE_LOOKUP
-	// struct lo_data *lo_data = get_lo_data(req);
-	// data_insert(lo_data->ebpf_ctxt, fi->fh, off, size, buf);
-#endif
 }
 
 #if USE_SPLICE
@@ -1509,18 +1513,21 @@ static void stackfs_ll_write_buf(fuse_req_t req, fuse_ino_t ino,
 	res = fuse_buf_copy(&dst, buf, FUSE_BUF_SPLICE_NONBLOCK);
 	generate_end_time(req);
 	populate_time(req);
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	struct lo_data *lo_data = get_lo_data(req);
+	struct fuse_buf *buf_entry = &buf->buf[0];
+	if (buf_entry->mem) {
+		// printf("stackfs_ll_write_buf: buf_entry->mem is not NULL\n");
+		char *data = (char *)buf_entry->mem;  // 获取写入数据的内容
+		data_insert(lo_data->ebpf_ctxt, (uint64_t)fi->fh, (uint64_t)off, (uint64_t)res, data);
+	} else {
+		// printf("stackfs_ll_write_buf: buf_entry->mem is NULL\n");
+	}
+#endif
 	if (res >= 0)
 		fuse_reply_write(req, res);
 	else
 		fuse_reply_err(req, res);
-
-#ifdef ENABLE_EXTFUSE_LOOKUP
-	// struct lo_data *lo_data = get_lo_data(req);
-	// struct fuse_buf *buf_entry = &buf->buf[0];
-	// char *data = (char *)buf_entry->mem;  // 获取写入数据的内容
-	// size_t data_size = buf_entry->size;   // 获取数据的大小
-	// data_insert(lo_data->ebpf_ctxt, fi->fh, off, data_size, data);
-#endif
 }
 #endif
 
@@ -2275,7 +2282,9 @@ static void stackfs_ll_init(void *userdata,
 
 	ERROR("\tMAX_WRITE=%u\n", conn->max_write);
 
-	// buf_map_init(lo->ebpf_ctxt);
+#ifdef ENABLE_EXTFUSE_LOOKUP
+	init_read_stat_map(lo->ebpf_ctxt);
+#endif
 }
 #endif
 

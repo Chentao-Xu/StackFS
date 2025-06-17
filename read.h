@@ -10,6 +10,6 @@
 #include "ebpf_lookup.h"
 
 
-int buf_map_init(ebpf_context_t *ctxt);
+void init_read_stat_map(ebpf_context_t *ctxt);
 int data_insert(ebpf_context_t *ctxt, uint64_t file_handle,
     uint64_t offset, uint64_t size, const char *data);
