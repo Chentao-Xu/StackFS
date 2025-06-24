@@ -1199,7 +1199,7 @@ static void stackfs_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 				off_t offset, struct fuse_file_info *fi)
 {
 	(void) ino;
-	printf("stackfs_ll_read: offset=%ld, size=%ld\n", offset, size);
+	// printf("stackfs_ll_read: offset=%ld, size=%ld\n", offset, size);
 #ifdef DEBUG
     struct lo_inode* inode;
     char path[PATH_MAX];
@@ -1440,7 +1440,7 @@ static void stackfs_ll_releasedir(fuse_req_t req, fuse_ino_t ino,
 static void stackfs_ll_write(fuse_req_t req, fuse_ino_t ino, const char *buf,
 			size_t size, off_t off, struct fuse_file_info *fi)
 {
-	printf("entering stackfs_ll_write!\n");
+	// printf("entering stackfs_ll_write!\n");
 	int res;
 	(void) ino;
 
@@ -2281,6 +2281,13 @@ static void stackfs_ll_init(void *userdata,
 	}
 
 	ERROR("\tMAX_WRITE=%u\n", conn->max_write);
+	printf("\n");
+	printf("       _____                         ____  _             _    _____ ____  \n");
+	printf("   ___|  ___|   _ ___  ___     _    / ___|| |_ __ _  ___| | _|  ___/ ___| \n");
+	printf("  / _ \\ |_ | | | / __|/ _ \\  _| |_  \\___ \\| __/ _` |/ __| |/ / |_  \\___ \\ \n");
+	printf(" |  __/  _|| |_| \\__ \\  __/ |_   _|  ___) | || (_| | (__|   <|  _|  ___) |\n");
+	printf("  \\___|_|   \\__,_|___/\\___|   |_|   |____/ \\__\\__,_|\\___|_|\\_\\_|   |____/ \n");
+	printf("\n");
 
 #ifdef ENABLE_EXTFUSE_LOOKUP
 	init_read_stat_map(lo->ebpf_ctxt);
